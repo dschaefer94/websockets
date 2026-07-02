@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -60,6 +61,11 @@ var (
 	chatHub = newHub()
 )
 
+const (
+	heartbeatInterval = 10 * time.Second
+	heartbeatPayload  = "__heartbeat__"
+)
+
 func setupRoutes() {
 	http.Handle("/ws", http.HandlerFunc(wsEndpoint))
 	http.Handle("/", http.FileServer(http.Dir(".")))
@@ -81,13 +87,25 @@ func readPump(h *hub, c *client) {
 }
 
 func writePump(c *client) {
+	ticker := time.NewTicker(heartbeatInterval)
 	defer func() {
+		ticker.Stop()
 		_ = c.conn.Close()
 	}()
 
-	for message := range c.send {
-		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
-			return
+	for {
+		select {
+		case message, ok := <-c.send:
+			if !ok {
+				return
+			}
+			if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
+				return
+			}
+		case <-ticker.C:
+			if err := c.conn.WriteMessage(websocket.TextMessage, []byte(heartbeatPayload)); err != nil {
+				return
+			}
 		}
 	}
 }
