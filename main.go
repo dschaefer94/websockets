@@ -1,56 +1,118 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
 
 	"github.com/gorilla/websocket"
 )
 
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
+type client struct {
+	conn *websocket.Conn
+	send chan []byte
 }
+
+type hub struct {
+	register   chan *client
+	unregister chan *client
+	broadcast  chan []byte
+	clients    map[*client]struct{}
+}
+
+func newHub() *hub {
+	return &hub{
+		register:   make(chan *client),
+		unregister: make(chan *client),
+		broadcast:  make(chan []byte),
+		clients:    make(map[*client]struct{}),
+	}
+}
+
+func (h *hub) run() {
+	for {
+		select {
+		case c := <-h.register:
+			h.clients[c] = struct{}{}
+		case c := <-h.unregister:
+			if _, ok := h.clients[c]; ok {
+				delete(h.clients, c)
+				close(c.send)
+			}
+		case msg := <-h.broadcast:
+			for c := range h.clients {
+				select {
+				case c.send <- msg:
+				default:
+					delete(h.clients, c)
+					close(c.send)
+				}
+			}
+		}
+	}
+}
+
+var (
+	upgrader = websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin:     func(r *http.Request) bool { return true },
+	}
+	chatHub = newHub()
+)
 
 func setupRoutes() {
-	http.HandleFunc("/", homePage)
-	http.HandleFunc("/ws", wsEndpoint)
+	http.Handle("/ws", http.HandlerFunc(wsEndpoint))
+	http.Handle("/", http.FileServer(http.Dir(".")))
 }
 
-func homePage(w http.ResponseWriter, r *http.Request) {
-	fmt.Fprintf(w, "Home Page")
-}
+func readPump(h *hub, c *client) {
+	defer func() {
+		h.unregister <- c
+		_ = c.conn.Close()
+	}()
 
-func reader(conn *websocket.Conn) {
 	for {
-		messageType, p, err := conn.ReadMessage()
+		_, message, err := c.conn.ReadMessage()
 		if err != nil {
-			log.Println(err)
 			return
 		}
-		log.Println(string(p))
-		if err := conn.WriteMessage(messageType, p); err != nil {
-			log.Println(err)
+		h.broadcast <- message
+	}
+}
+
+func writePump(c *client) {
+	defer func() {
+		_ = c.conn.Close()
+	}()
+
+	for message := range c.send {
+		if err := c.conn.WriteMessage(websocket.TextMessage, message); err != nil {
 			return
 		}
 	}
 }
 
 func wsEndpoint(w http.ResponseWriter, r *http.Request) {
-	//quick & dirty
-	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
-	ws, err := upgrader.Upgrade(w, r, nil)
+	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Println(err)
+		log.Println("websocket upgrade:", err)
+		return
 	}
-	log.Println("Connected")
-	reader(ws)
+
+	c := &client{
+		conn: conn,
+		send: make(chan []byte, 16),
+	}
+
+	chatHub.register <- c
+	go writePump(c)
+	readPump(chatHub, c)
 }
 
 func main() {
+	go chatHub.run()
 
-	fmt.Println("Websocket")
 	setupRoutes()
+	log.Println("Websocket POC läuft auf http://localhost:8080")
 	log.Fatal(http.ListenAndServe(":8080", nil))
 }

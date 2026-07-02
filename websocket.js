@@ -1,15 +1,27 @@
-let socket = new WebSocket("ws://localhost:8080/ws");
-console.log("Websocket-Verbindungsversuch")
-socket.onopen = () => {
-    console.log("Websocket-Verbindung erfolgreich");
-    socket.send("Hallo vom Clienten!")
+const socket = new WebSocket("ws://localhost:8080/ws");
+const form = document.querySelector("[textfeld]");
+const input = document.querySelector("[textfeldinput]");
+const messages = document.querySelector("[nachrichten]");
+const sender = document.querySelector("h1")?.textContent?.trim() || "???";
+
+function addMessage(text) {
+  messages.insertAdjacentHTML("beforeend", `<li>${text}</li>`);
 }
-socket.onclose = (event) => {
-    console.log("Websocket-Verbindung geschlossen", event)
-}
-socket.onmessage = (msg) => {
-    console.log(msg);
-}
-socket.onerror = (error) => {
-    console.log("Websocket-Fehler", error);
-}
+
+socket.onopen = () => console.log("WebSocket verbunden");
+socket.onmessage = (event) => addMessage(event.data);
+socket.onerror = () => console.error("WebSocket-Fehler");
+socket.onclose = () => console.error("WebSocket-Verbindung geschlossen");
+
+form.addEventListener("submit", (event) => {
+  event.preventDefault();
+
+  const text = input.value.trim();
+  if (!text || socket.readyState !== WebSocket.OPEN) {
+    return;
+  }
+
+  socket.send(`${sender}: ${text}`);
+  input.value = "";
+  input.focus();
+});
